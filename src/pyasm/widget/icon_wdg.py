@@ -267,16 +267,6 @@ class IconWdg(DivWdg):
     'XSI'                  : "/context/icons/mime-types/xsi_scn.jpg",
     'HOUDINI'              : "/context/icons/mime-types/houdini.png",
 
-    # Custom Icons for Footwear PoC
-    'LOCK_C1'              : "/context/icons/custom/lock_c1.png",
-    'UNLOCK_C1'            : "/context/icons/custom/unlock_c1.png",
-    'FOLDER_C1'            : "/context/icons/custom/folder_c1.png",
-    'SAVE_C1'              : "/context/icons/custom/save_c1.png",    
-    'SUBMIT_C1'            : "/context/icons/custom/submit_c1.png",
-    'UPDATE_C1'            : "/context/icons/custom/update_c1.png",
-    'SYNC_C1'              : "/context/icons/custom/sync_c1.png",
-    'REVERT_C1'            : "/context/icons/custom/revert_c1.png",
-
     # New 32x32 image icons
     'ADVANCED_32'             : "/context/icons/32x32/advanced_32.png",
     'ARROW_UP_LEFT_32'        : "/context/icons/32x32/arrow_up_left_32.png",

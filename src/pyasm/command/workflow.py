@@ -10,7 +10,7 @@
 #
 #
 
-__all__ = ['Workflow', 'BaseProcessTrigger', 'ProcessStatusTrigger']
+__all__ = ['Workflow', 'BaseWorkflowNodeHandler', 'BaseProcessTrigger', 'ProcessStatusTrigger', 'CustomProcessConfig']
 
 import tacticenv
 
@@ -271,12 +271,43 @@ class ProcessStatusTrigger(Trigger):
 
 class BaseProcessTrigger(Trigger):
 
+    def get_handler(my):
+        if node_type == "action":
+            handler = WorkflowActionNodeHandler(input=my.input)
+        elif node_type == "approval":
+            handler = WorkflowApprovalNodeHandler(input=my.input)
+        elif node_type in ["manual", "node"]:
+            handler = WorkflowManualNodeHandler(input=my.input)
+        elif node_type == "hierarchy":
+            handler = WorkflowHierarchyNodeHandler(input=my.input)
+        elif node_type == "input":
+            handler = WorkflowOutputNodeHandler(input=my.input)
+        elif node_type == "output":
+            handler = WorkflowOutputNodeHandler(input=my.input)
+        elif node_type == "condition":
+            handler = WorkflowConditionNodeHandler(input=my.input)
+        elif node_type == "dependency":
+            handler = WorkflowDependencyNodeHandler(input=my.input)
+        elif node_type == "progress":
+            handler = WorkflowProgressNodeHandler(input=my.input)
+
+        elif node_type == "youtube":
+            extra_options = {
+                    'input': my.input
+            }
+            handler = CustomProcessConfig.get_process_handler(node_type, extra_options)
+            #YouTubeNodeHandler(input=my.input)
+
+        return handler
+
+
 
     def set_all_tasks(my, sobject, process, status):
         # prevent for instance TaskStatusChangeTrigger setting a custom task status back to complete
         if not hasattr(my, "internal"):
             my.internal = my.input.get("internal") or False
 
+        
         if my.internal:
             return
         tasks = Task.get_by_sobject(sobject, process=process)
@@ -734,13 +765,19 @@ class BaseWorkflowNodeHandler(BaseProcessTrigger):
 
         process_output = workflow.get("output")
         if process_output:
-            from pyasm.biz import Snapshot
-            snapshot = Snapshot.get_latest_by_sobject(my.sobject, process=process_output.get("process"))
-            if snapshot:
-                my.output_data = {
-                    'snapshot': snapshot,
-                    'path': snapshot.get_lib_path_by_type()
-                }
+            my.output_data = process_output.copy()
+
+            output_type = process_output.get("type")
+            if output_type == "file":
+                my.output_data['snapshot'] = None
+                my.output_data['path'] = process_output.get("path")
+
+            else:
+                from pyasm.biz import Snapshot
+                snapshot = Snapshot.get_latest_by_sobject(my.sobject, process=process_output.get("process"))
+                if snapshot:
+                    my.output_data['snapshot'] = snapshot
+                    my.output_data['path'] = snapshot.get_lib_path_by_type()
 
         my.store_state()
         # ---------------------------------------
@@ -848,27 +885,60 @@ class WorkflowManualNodeHandler(BaseWorkflowNodeHandler):
         search.add_filter("pipeline_code", my.pipeline.get_code())
         process_sobj = search.get_sobject()
         autocreate_task = False
+        mapped_status = "pending"
+
         if process_sobj:
             workflow = process_sobj.get_json_value("workflow", {})
             if workflow.get("autocreate_task") in ['true', True]:
                 autocreate_task = True
+            
+            process_obj = my.pipeline.get_process(my.process)
+            if not process_obj:
+                print "No process_obj [%s]" % process
+                return
 
+            # only if it's not internal. If it's true, set_all_tasks() returns anyways
+            # this saves unnecessary map lookup
+            if not my.internal:
+                mapped_status = my.get_mapped_status(process_obj)
+                
+        
 
         # check to see if the tasks exist and if they don't then create one
         if autocreate_task:
+            mapped_status = my.get_mapped_status(process_obj)
             tasks = Task.get_by_sobject(my.sobject, process=my.process)
             if not tasks:
-                Task.add_initial_tasks(my.sobject, processes=[my.process], status="pending")
+                Task.add_initial_tasks(my.sobject, processes=[my.process], status=mapped_status)
             else:
-                my.set_all_tasks(my.sobject, my.process, "pending")
+                my.set_all_tasks(my.sobject, my.process, mapped_status)
         else:
-            my.set_all_tasks(my.sobject, my.process, "pending")
+            my.set_all_tasks(my.sobject, my.process,  mapped_status)
 
 
         my.run_callback(my.pipeline, my.process, "pending")
 
         Trigger.call(my, "process|action", output=my.input)
 
+
+    def get_mapped_status(my, process_obj):
+        '''Get what status is mapped to Pending'''
+        mapped_status = 'pending'
+
+        status_pipeline_code = process_obj.get_task_pipeline()
+        search = Search("config/process")        
+        search.add_op_filters([("workflow", "like","%Pending%")])
+        search.add_filter("pipeline_code", status_pipeline_code)
+        pending_process_sobj = search.get_sobject()
+        if pending_process_sobj:
+            # verify
+            workflow = pending_process_sobj.get_json_value("workflow", {})
+            mapping = workflow.get('mapping')
+            
+            if mapping == 'Pending':
+                mapped_status = pending_process_sobj.get_value('process')
+
+        return mapped_status
 
     def handle_action(my):
         my.log_message(my.sobject, my.process, "in_progress")
@@ -1042,7 +1112,7 @@ class WorkflowDependencyNodeHandler(BaseWorkflowNodeHandler):
 
 
     def handle_action(my):
-        my.log_message(my.sobject, my.process, "in_prgress")
+        my.log_message(my.sobject, my.process, "in_progress")
         my.set_all_tasks(my.sobject, my.process, "in_progress")
         my.run_callback(my.pipeline, my.process, "action")
         return my._handle_dependency()
@@ -1385,7 +1455,7 @@ class ProcessPendingTrigger(BaseProcessTrigger):
     
     def execute(my):
         # set all task to pending
-
+        
         pipeline = my.input.get("pipeline")
         process = my.input.get("process")
         sobject = my.input.get("sobject")
@@ -1424,6 +1494,16 @@ class ProcessPendingTrigger(BaseProcessTrigger):
         elif node_type == "progress":
             handler = WorkflowProgressNodeHandler(input=my.input)
             return handler.handle_pending()
+
+        """
+        else:
+            process_type = Search.get_by_code("sthpw/process_type", node_type)
+            #handle_class = process_type.get_value("info_handler_class")
+            handle_class = process_type.get_value("node_handler_class")
+            handler = Common.create_from_class_path(handle_class, my.input)
+            handler.handle_pending()
+        """
+
 
 
 
@@ -1514,7 +1594,7 @@ class ProcessCompleteTrigger(BaseProcessTrigger):
             parts = process.split(".")
             process = parts[-1]
 
-
+        
         process_obj = pipeline.get_process(process)
         node_type = process_obj.get_type()
 
@@ -1695,6 +1775,85 @@ class ProcessErrorTrigger(BaseProcessTrigger):
 
 
 
+class CustomProcessConfig(object):
+    """
+    <config>
+    <youtube>
+        <element name="node">
+          <display class="YouTubeNodeWdg"/>
+        </element>
+        <element name="info">
+          <display class="YouTubeProcessInfoWdg"/>
+        </element>
+        <element name="process">
+          <display class="YouTubeNodeHandler"/>
+        </element>
+    </youtube>
+    </config>
+    """
+
+    def get_config(cls, node_type):
+
+        category = "workflow"
+
+        # cache already search configs
+        configs = Container.get("CustomProcessConfig:configs")
+        if configs == None:
+            configs = {}
+            Container.put("CustomProcessConfig:configs", configs)
+
+
+        config = configs.get(node_type)
+        if config == None:
+            from pyasm.search import WidgetDbConfig
+
+            search = Search("config/widget_config")
+            search.add_filter("category", category)
+            search.add_filter("view", node_type)
+
+            config = search.get_sobject()
+
+            configs[node_type] = config
+
+
+
+        return config
+
+    get_config = classmethod(get_config)
+
+
+
+
+    def get_node_handler(cls, node_type, extra_options={}):
+        config = cls.get_config(node_type)
+        extra_options['node_type'] = node_type
+        handler = config.get_display_widget("node", extra_options)
+        return handler
+    get_node_handler = classmethod(get_node_handler)
+
+
+    def get_info_handler(cls, node_type, extra_options={}):
+        config = cls.get_config(node_type)
+        extra_options['node_type'] = node_type
+        handler = config.get_display_widget("info", extra_options)
+        return handler
+    get_info_handler = classmethod(get_info_handler)
+
+
+    def get_process_handler(cls, node_type, extra_options={}):
+        config = cls.get_config(node_type)
+        extra_options['node_type'] = node_type
+        handler = config.get_display_widget("process", extra_options)
+        return handler
+    get_process_handler = classmethod(get_process_handler)
+
+
+
+
+
+
+
+
 class ProcessCustomTrigger(BaseProcessTrigger):
 
     def execute(my):
@@ -1726,7 +1885,7 @@ class ProcessCustomTrigger(BaseProcessTrigger):
         if not status_pipeline:
             print "No custom status pipeline [%s]" % process
             return
-
+        
         status_processes = status_pipeline.get_process_names()
 
         status_obj = status_pipeline.get_process(status)
@@ -1777,6 +1936,7 @@ class ProcessCustomTrigger(BaseProcessTrigger):
 
             for process in processes:
                 process_name = process.get_name()
+                
                 output = {
                     'sobject': sobject,
                     'pipeline': pipeline,
@@ -1809,7 +1969,7 @@ class ProcessListenTrigger(BaseProcessTrigger):
             return
         current_status = my.input.get("status")
         current_sobject = my.input.get("sobject")
-    
+
 
         listeners = Container.get("process_listeners")
         if listeners == None:
